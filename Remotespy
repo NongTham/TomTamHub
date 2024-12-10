@@ -1,0 +1,1254 @@
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+--// Module
+local keywords = {
+	lua = {
+		"and", "break", "or", "else", "elseif", "if", "then", "until", "repeat", "while", "do", "for", "in", "end",
+		"local", "return", "function", "export"
+	},
+	rbx = {
+		"game", "workspace", "script", "math", "string", "table", "task", "wait", "select", "next", "Enum",
+		"error", "warn", "tick", "assert", "shared", "loadstring", "tonumber", "tostring", "type",
+		"typeof", "unpack", "print", "Instance", "CFrame", "Vector3", "Vector2", "Color3", "UDim", "UDim2", "Ray", "BrickColor",
+		"OverlapParams", "RaycastParams", "Axes", "Random", "Region3", "Rect", "TweenInfo",
+		"collectgarbage", "not", "utf8", "pcall", "xpcall", "_G", "setmetatable", "getmetatable", "os", "pairs", "ipairs"
+	},
+	operators = {
+		"#", "+", "-", "*", "%", "/", "^", "=", "~", "=", "<", ">", ",", ".", "(", ")", "{", "}", "[", "]", ";", ":"
+	}
+}
+
+local colors = {
+	numbers = Color3.fromRGB(135, 170, 255),    
+	boolean = Color3.fromRGB(255, 120, 120),   
+	operator = Color3.fromRGB(255, 220, 100), 
+	lua = Color3.fromRGB(180, 140, 255),       
+	rbx = Color3.fromRGB(135, 200, 255),       
+	str = Color3.fromRGB(130, 220, 130),       
+	comment = Color3.fromRGB(180, 190, 200),   
+	null = Color3.fromRGB(150, 150, 150),     
+	call = Color3.fromRGB(130, 190, 255),    
+	self_call = Color3.fromRGB(240, 210, 160), 
+	local_color = Color3.fromRGB(200, 170, 255), 
+	function_color = Color3.fromRGB(255, 150, 200), 
+	self_color = Color3.fromRGB(180, 140, 255), 
+	local_property = Color3.fromRGB(180, 220, 255)
+}
+
+local function createKeywordSet(keywords)
+	local keywordSet = {}
+	for _, keyword in ipairs(keywords) do
+		keywordSet[keyword] = true
+	end
+	return keywordSet
+end
+
+local luaSet = createKeywordSet(keywords.lua)
+local rbxSet = createKeywordSet(keywords.rbx)
+local operatorsSet = createKeywordSet(keywords.operators)
+
+local function getHighlight(tokens, index)
+	local token = tokens[index]
+
+	if colors[token .. "_color"] then
+		return colors[token .. "_color"]
+	end
+
+	if tonumber(token) then
+		return colors.numbers
+	elseif token == "nil" then
+		return colors.null
+	elseif token:sub(1, 2) == "--" then
+		return colors.comment
+	elseif operatorsSet[token] then
+		return colors.operator
+	elseif luaSet[token] then
+		return colors.rbx
+	elseif rbxSet[token] then
+		return colors.lua
+	elseif token:sub(1, 1) == "\"" or token:sub(1, 1) == "\'" then
+		return colors.str
+	elseif token == "true" or token == "false" then
+		return colors.boolean
+	end
+
+	if tokens[index + 1] == "(" then
+		if tokens[index - 1] == ":" then
+			return colors.self_call
+		end
+
+		return colors.call
+	end
+
+	if tokens[index - 1] == "." then
+		if tokens[index - 2] == "Enum" then
+			return colors.rbx
+		end
+
+		return colors.local_property
+	end
+end
+
+function run(source)
+	local tokens = {}
+	local currentToken = ""
+
+	local inString = false
+	local inComment = false
+	local commentPersist = false
+
+	for i = 1, #source do
+		local character = source:sub(i, i)
+
+		if inComment then
+			if character == "\n" and not commentPersist then
+				table.insert(tokens, currentToken)
+				table.insert(tokens, character)
+				currentToken = ""
+
+				inComment = false
+			elseif source:sub(i - 1, i) == "]]" and commentPersist then
+				currentToken ..= "]"
+
+				table.insert(tokens, currentToken)
+				currentToken = ""
+
+				inComment = false
+				commentPersist = false
+			else
+				currentToken = currentToken .. character
+			end
+		elseif inString then
+			if character == inString and source:sub(i-1, i-1) ~= "\\" or character == "\n" then
+				currentToken = currentToken .. character
+				inString = false
+			else
+				currentToken = currentToken .. character
+			end
+		else
+			if source:sub(i, i + 1) == "--" then
+				table.insert(tokens, currentToken)
+				currentToken = "-"
+				inComment = true
+				commentPersist = source:sub(i + 2, i + 3) == "[["
+			elseif character == "\"" or character == "\'" then
+				table.insert(tokens, currentToken)
+				currentToken = character
+				inString = character
+			elseif operatorsSet[character] then
+				table.insert(tokens, currentToken)
+				table.insert(tokens, character)
+				currentToken = ""
+			elseif character:match("[%w_]") then
+				currentToken = currentToken .. character
+			else
+				table.insert(tokens, currentToken)
+				table.insert(tokens, character)
+				currentToken = ""
+			end
+		end
+	end
+
+	table.insert(tokens, currentToken)
+
+	local highlighted = {}
+
+	for i, token in ipairs(tokens) do
+		local highlight = getHighlight(tokens, i)
+
+		if highlight then
+			local syntax = string.format("<font color = \"#%s\">%s</font>", highlight:ToHex(), token:gsub("<", "&lt;"):gsub(">", "&gt;"))
+
+			table.insert(highlighted, syntax)
+		else
+			table.insert(highlighted, token)
+		end
+	end
+
+	return table.concat(highlighted)
+end
+
+--// UI_Interface (Creation)
+-- Gui to Lua
+-- Version: 3.2
+
+-- Instances:
+
+local Spy_Interface = Instance.new("ScreenGui")
+local Background = Instance.new("Frame")
+local LeftPanel = Instance.new("Frame")
+local LogList = Instance.new("ScrollingFrame")
+local UIListLayout = Instance.new("UIListLayout")
+local RemoteTemplate = Instance.new("Frame")
+local ColorBar = Instance.new("Frame")
+local Text = Instance.new("TextLabel")
+local Button = Instance.new("TextButton")
+local RightPanel = Instance.new("Frame")
+local ScrollingFrame = Instance.new("ScrollingFrame")
+local UIGridLayout = Instance.new("UIGridLayout")
+local FunctionTemplate = Instance.new("Frame")
+local ColorBar_2 = Instance.new("Frame")
+local Text_2 = Instance.new("TextLabel")
+local Button_2 = Instance.new("TextButton")
+local CodeBox = Instance.new("Frame")
+local Container = Instance.new("ScrollingFrame")
+local TextBox = Instance.new("TextBox")
+local TopBar = Instance.new("Frame")
+local Simple = Instance.new("TextButton")
+local UICorner = Instance.new("UICorner")
+local CloseButton = Instance.new("TextButton")
+local ImageLabel = Instance.new("ImageLabel")
+local UICorner_2 = Instance.new("UICorner")
+local MaximizeButton = Instance.new("TextButton")
+local ImageLabel_2 = Instance.new("ImageLabel")
+local UICorner_3 = Instance.new("UICorner")
+local MinimizeButton = Instance.new("TextButton")
+local ImageLabel_3 = Instance.new("ImageLabel")
+local UICorner_4 = Instance.new("UICorner")
+local ToolTip = Instance.new("Frame")
+local TextLabel = Instance.new("TextLabel")
+
+--Properties:
+Spy_Interface.Name = "Spy_Interface"
+Spy_Interface.Parent = game.Players.LocalPlayer.PlayerGui
+Spy_Interface.Enabled = false
+Spy_Interface.ResetOnSpawn = false
+
+Background.Name = "Background"
+Background.Parent = Spy_Interface
+Background.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Background.BackgroundTransparency = 1.000
+Background.BorderColor3 = Color3.fromRGB(27, 42, 53)
+Background.Position = UDim2.new(0, 500, 0, 200)
+Background.Size = UDim2.new(0, 450, 0, 268)
+
+LeftPanel.Name = "LeftPanel"
+LeftPanel.Parent = Background
+LeftPanel.BackgroundColor3 = Color3.fromRGB(28, 27, 29)
+LeftPanel.BorderColor3 = Color3.fromRGB(27, 42, 53)
+LeftPanel.BorderSizePixel = 0
+LeftPanel.Position = UDim2.new(0, 0, 0, 19)
+LeftPanel.Size = UDim2.new(0, 131, 0, 249)
+
+LogList.Name = "LogList"
+LogList.Parent = LeftPanel
+LogList.Active = true
+LogList.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+LogList.BackgroundTransparency = 1.000
+LogList.BorderColor3 = Color3.fromRGB(27, 42, 53)
+LogList.BorderSizePixel = 0
+LogList.Position = UDim2.new(0, 0, 0, 9)
+LogList.Size = UDim2.new(0, 131, 0, 232)
+LogList.CanvasSize = UDim2.new(0, 0, 0, 0)
+LogList.ScrollBarThickness = 4
+
+UIListLayout.Parent = LogList
+UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+RemoteTemplate.Name = "RemoteTemplate"
+RemoteTemplate.Parent = LogList
+RemoteTemplate.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+RemoteTemplate.BackgroundTransparency = 1.000
+RemoteTemplate.BorderColor3 = Color3.fromRGB(27, 42, 53)
+RemoteTemplate.Size = UDim2.new(0, 117, 0, 27)
+RemoteTemplate.Visible = false
+
+ColorBar.Name = "ColorBar"
+ColorBar.Parent = RemoteTemplate
+ColorBar.BackgroundColor3 = Color3.fromRGB(255, 242, 0)
+ColorBar.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ColorBar.BorderSizePixel = 0
+ColorBar.Position = UDim2.new(0, 0, 0, 1)
+ColorBar.Size = UDim2.new(0, 7, 0, 18)
+ColorBar.ZIndex = 2
+
+Text.Name = "Text"
+Text.Parent = RemoteTemplate
+Text.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Text.BackgroundTransparency = 1.000
+Text.BorderColor3 = Color3.fromRGB(27, 42, 53)
+Text.Position = UDim2.new(0, 12, 0, 1)
+Text.Size = UDim2.new(0, 105, 0, 18)
+Text.ZIndex = 2
+Text.Font = Enum.Font.SourceSans
+Text.Text = "TEXT"
+Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+Text.TextSize = 14.000
+Text.TextWrapped = true
+Text.TextXAlignment = Enum.TextXAlignment.Left
+
+Button.Name = "Button"
+Button.Parent = RemoteTemplate
+Button.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Button.BackgroundTransparency = 0.750
+Button.BorderColor3 = Color3.fromRGB(255, 255, 255)
+Button.Position = UDim2.new(0, 0, 0, 1)
+Button.Size = UDim2.new(0, 117, 0, 18)
+Button.AutoButtonColor = false
+Button.Font = Enum.Font.SourceSans
+Button.Text = ""
+Button.TextColor3 = Color3.fromRGB(0, 0, 0)
+Button.TextSize = 14.000
+
+RightPanel.Name = "RightPanel"
+RightPanel.Parent = Background
+RightPanel.BackgroundColor3 = Color3.fromRGB(28, 27, 29)
+RightPanel.BorderColor3 = Color3.fromRGB(27, 42, 53)
+RightPanel.BorderSizePixel = 0
+RightPanel.Position = UDim2.new(0, 131, 0, 19)
+RightPanel.Size = UDim2.new(0, 319, 0, 249)
+
+ScrollingFrame.Parent = RightPanel
+ScrollingFrame.Active = true
+ScrollingFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ScrollingFrame.BackgroundTransparency = 1.000
+ScrollingFrame.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ScrollingFrame.Position = UDim2.new(0, 0, 0.640562236, 0)
+ScrollingFrame.Size = UDim2.new(1, 0, 0.359437764, -9)
+ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollingFrame.ScrollBarThickness = 4
+
+UIGridLayout.Parent = ScrollingFrame
+UIGridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UIGridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIGridLayout.CellPadding = UDim2.new(0, 0, 0, 0)
+UIGridLayout.CellSize = UDim2.new(0, 94, 0, 27)
+
+FunctionTemplate.Name = "FunctionTemplate"
+FunctionTemplate.Parent = ScrollingFrame
+FunctionTemplate.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+FunctionTemplate.BackgroundTransparency = 1.000
+FunctionTemplate.BorderColor3 = Color3.fromRGB(27, 42, 53)
+FunctionTemplate.Size = UDim2.new(0, 117, 0, 23)
+FunctionTemplate.Visible = false
+
+ColorBar_2.Name = "ColorBar"
+ColorBar_2.Parent = FunctionTemplate
+ColorBar_2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ColorBar_2.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ColorBar_2.BorderSizePixel = 0
+ColorBar_2.Position = UDim2.new(0, 7, 0, 10)
+ColorBar_2.Size = UDim2.new(0, 7, 0, 18)
+ColorBar_2.ZIndex = 3
+
+Text_2.Name = "Text"
+Text_2.Parent = FunctionTemplate
+Text_2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Text_2.BackgroundTransparency = 1.000
+Text_2.BorderColor3 = Color3.fromRGB(27, 42, 53)
+Text_2.Position = UDim2.new(0, 19, 0, 10)
+Text_2.Size = UDim2.new(0, 69, 0, 18)
+Text_2.ZIndex = 2
+Text_2.Font = Enum.Font.SourceSans
+Text_2.Text = "TEXT"
+Text_2.TextColor3 = Color3.fromRGB(255, 255, 255)
+Text_2.TextSize = 14.000
+Text_2.TextStrokeColor3 = Color3.fromRGB(36, 35, 38)
+Text_2.TextWrapped = true
+Text_2.TextXAlignment = Enum.TextXAlignment.Left
+
+Button_2.Name = "Button"
+Button_2.Parent = FunctionTemplate
+Button_2.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Button_2.BackgroundTransparency = 0.700
+Button_2.BorderColor3 = Color3.fromRGB(255, 255, 255)
+Button_2.Position = UDim2.new(0, 7, 0, 10)
+Button_2.Size = UDim2.new(0, 80, 0, 18)
+Button_2.AutoButtonColor = false
+Button_2.Font = Enum.Font.SourceSans
+Button_2.Text = ""
+Button_2.TextColor3 = Color3.fromRGB(0, 0, 0)
+Button_2.TextSize = 14.000
+
+CodeBox.Name = "CodeBox"
+CodeBox.Parent = RightPanel
+CodeBox.BackgroundColor3 = Color3.fromRGB(20, 18, 20)
+CodeBox.BorderColor3 = Color3.fromRGB(27, 42, 53)
+CodeBox.BorderSizePixel = 0
+CodeBox.Size = UDim2.new(0, 319, 0, 152)
+
+Container.Name = "Container"
+Container.Parent = CodeBox
+Container.Active = true
+Container.AnchorPoint = Vector2.new(0.5, 0.5)
+Container.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Container.BackgroundTransparency = 1.000
+Container.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Container.BorderSizePixel = 0
+Container.Position = UDim2.new(0.5, 0, 0.5, 0)
+Container.Size = UDim2.new(0.980669081, 0, 0.827865422, 0)
+Container.CanvasSize = UDim2.new(0, 100, 0, 1000)
+Container.ScrollBarThickness = 0
+
+TextBox.Parent = Container
+TextBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+TextBox.BackgroundTransparency = 1.000
+TextBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+TextBox.BorderSizePixel = 0
+TextBox.Position = UDim2.new(0.0159829464, 0, 2.42519548e-07, 0)
+TextBox.Size = UDim2.new(0.977890193, 0, 2.42314506, 0)
+TextBox.ClearTextOnFocus = false
+TextBox.Font = Enum.Font.Code
+TextBox.RichText = true
+TextBox.MultiLine = true
+TextBox.PlaceholderColor3 = Color3.fromRGB(255, 255, 255)
+TextBox.Text = ""
+TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+TextBox.TextSize = 14.000
+TextBox.TextWrapped = true
+TextBox.TextXAlignment = Enum.TextXAlignment.Left
+TextBox.TextYAlignment = Enum.TextYAlignment.Top
+
+TopBar.Name = "TopBar"
+TopBar.Parent = Background
+TopBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+TopBar.BorderColor3 = Color3.fromRGB(27, 42, 53)
+TopBar.BorderSizePixel = 0
+TopBar.Position = UDim2.new(0, 0, -0.0223880596, 0)
+TopBar.Size = UDim2.new(0, 450, 0, 25)
+
+Simple.Name = "Simple"
+Simple.Parent = TopBar
+Simple.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Simple.BackgroundTransparency = 1.000
+Simple.BorderColor3 = Color3.fromRGB(27, 42, 53)
+Simple.Position = UDim2.new(0, 10, 0, 3)
+Simple.Size = UDim2.new(0, 57, 0, 18)
+Simple.AutoButtonColor = false
+Simple.Font = Enum.Font.SourceSansBold
+Simple.Text = "Event"
+Simple.TextColor3 = Color3.fromRGB(255, 255, 255)
+Simple.TextSize = 14.000
+Simple.TextXAlignment = Enum.TextXAlignment.Left
+
+UICorner.CornerRadius = UDim.new(1, 0)
+UICorner.Parent = Simple
+
+CloseButton.Name = "CloseButton"
+CloseButton.Parent = TopBar
+CloseButton.BackgroundColor3 = Color3.fromRGB(103, 50, 50)
+CloseButton.BorderColor3 = Color3.fromRGB(27, 42, 53)
+CloseButton.BorderSizePixel = 0
+CloseButton.Position = UDim2.new(0.984444439, -19, 0.119999997, 0)
+CloseButton.Size = UDim2.new(0, 19, 0, 19)
+CloseButton.Font = Enum.Font.SourceSans
+CloseButton.Text = ""
+CloseButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+CloseButton.TextSize = 14.000
+
+ImageLabel.Parent = CloseButton
+ImageLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ImageLabel.BackgroundTransparency = 1.000
+ImageLabel.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ImageLabel.Position = UDim2.new(0, 5, 0, 5)
+ImageLabel.Size = UDim2.new(0, 9, 0, 9)
+ImageLabel.Image = "http://www.roblox.com/asset/?id=5597086202"
+
+UICorner_2.CornerRadius = UDim.new(1, 0)
+UICorner_2.Parent = CloseButton
+
+MaximizeButton.Name = "MaximizeButton"
+MaximizeButton.Parent = TopBar
+MaximizeButton.BackgroundColor3 = Color3.fromRGB(36, 35, 38)
+MaximizeButton.BorderColor3 = Color3.fromRGB(27, 42, 53)
+MaximizeButton.BorderSizePixel = 0
+MaximizeButton.Position = UDim2.new(0.984444439, -38, 0.119999997, 0)
+MaximizeButton.Size = UDim2.new(0, 19, 0, 19)
+MaximizeButton.Font = Enum.Font.SourceSans
+MaximizeButton.Text = ""
+MaximizeButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+MaximizeButton.TextSize = 14.000
+
+ImageLabel_2.Parent = MaximizeButton
+ImageLabel_2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ImageLabel_2.BackgroundTransparency = 1.000
+ImageLabel_2.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ImageLabel_2.Position = UDim2.new(0, 5, 0, 5)
+ImageLabel_2.Size = UDim2.new(0, 9, 0, 9)
+ImageLabel_2.Image = "http://www.roblox.com/asset/?id=5597108117"
+
+UICorner_3.CornerRadius = UDim.new(1, 0)
+UICorner_3.Parent = MaximizeButton
+
+MinimizeButton.Name = "MinimizeButton"
+MinimizeButton.Parent = TopBar
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(36, 35, 38)
+MinimizeButton.BorderColor3 = Color3.fromRGB(27, 42, 53)
+MinimizeButton.BorderSizePixel = 0
+MinimizeButton.Position = UDim2.new(0.984444439, -57, 0.119999997, 0)
+MinimizeButton.Size = UDim2.new(0, 19, 0, 19)
+MinimizeButton.Font = Enum.Font.SourceSans
+MinimizeButton.Text = ""
+MinimizeButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+MinimizeButton.TextSize = 14.000
+
+ImageLabel_3.Parent = MinimizeButton
+ImageLabel_3.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ImageLabel_3.BackgroundTransparency = 1.000
+ImageLabel_3.BorderColor3 = Color3.fromRGB(27, 42, 53)
+ImageLabel_3.Position = UDim2.new(0, 5, 0, 5)
+ImageLabel_3.Size = UDim2.new(0, 9, 0, 9)
+ImageLabel_3.Image = "http://www.roblox.com/asset/?id=5597105827"
+
+UICorner_4.CornerRadius = UDim.new(1, 0)
+UICorner_4.Parent = MinimizeButton
+
+ToolTip.Name = "ToolTip"
+ToolTip.Parent = Spy_Interface
+ToolTip.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+ToolTip.BackgroundTransparency = 0.100
+ToolTip.BorderColor3 = Color3.fromRGB(255, 255, 255)
+ToolTip.Size = UDim2.new(0, 200, 0, 50)
+ToolTip.Visible = false
+ToolTip.ZIndex = 3
+
+TextLabel.Parent = ToolTip
+TextLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+TextLabel.BackgroundTransparency = 1.000
+TextLabel.BorderColor3 = Color3.fromRGB(27, 42, 53)
+TextLabel.Position = UDim2.new(0, 2, 0, 2)
+TextLabel.Size = UDim2.new(0, 196, 0, 46)
+TextLabel.ZIndex = 3
+TextLabel.Font = Enum.Font.SourceSans
+TextLabel.Text = "This is some slightly longer text."
+TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TextLabel.TextSize = 14.000
+TextLabel.TextWrapped = true
+TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+TextLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+--// Function 
+local InProcess
+local function AddDraggingFunctionality(DragPoint, Main, Function)
+	pcall(function()
+		local Dragging, DragInput, MousePos, FramePos = false, nil, nil, nil
+
+		DragPoint.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				Dragging = true
+				MousePos = Input.Position
+				FramePos = Main.Position
+
+				Input.Changed:Connect(function()
+					if Input.UserInputState == Enum.UserInputState.End then
+						Dragging = false
+					end
+				end)
+			end
+		end)
+
+		DragPoint.InputChanged:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+				DragInput = Input
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(Input)
+
+			if InProcess then return end
+
+			if Input == DragInput and Dragging then
+				local Delta = Input.Position - MousePos
+				TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position  = UDim2.new(FramePos.X.Scale,FramePos.X.Offset + Delta.X, FramePos.Y.Scale, FramePos.Y.Offset + Delta.Y)}):Play()
+			end
+		end)
+	end)
+end
+
+--// Start Events
+local MyUI
+local RemoteEvent
+
+local function PassRemotes(Function)
+	for _, Object in game:GetDescendants() do
+
+		if (not Object:IsA("RemoteEvent") and not Object:IsA("UnreliableRemoteEvent")) or Object.Name == "__RemoteSpy__ByZit"  then continue end
+
+		local Type = (Object:IsA("RemoteEvent") or Object:IsA("UnreliableRemoteEvent")) and "Event" or "Invoke"
+		local CurrentOn = "OnServer" .. Type
+
+		local NewFunction = function(...)
+			Function(Object, ...)
+		end
+
+		if Type == "Event" then
+			Object[CurrentOn]:Connect(NewFunction)
+			continue
+		end
+
+		Object[CurrentOn] = NewFunction
+	end
+end
+
+if RunService:IsRunning() then
+	if RunService:IsServer() then
+		RemoteEvent = Instance.new("RemoteEvent")	
+		RemoteEvent.Name = "__RemoteSpy__ByZit"
+		RemoteEvent.Parent = game.ReplicatedStorage
+
+		PassRemotes(function(Remote, Player, ...)
+			RemoteEvent:FireClient(Player, Remote, ...)
+		end)
+
+		return
+	end
+
+	local Mouse = game.Players.LocalPlayer:GetMouse()
+
+	RemoteEvent = game.ReplicatedStorage:WaitForChild("__RemoteSpy__ByZit")
+
+	MyUI = Spy_Interface:Clone()
+
+	local Background = MyUI.Background
+
+	local CodeBox = Background.RightPanel.CodeBox
+	local RightScrolling = Background.RightPanel.ScrollingFrame
+	local LogList = Background.LeftPanel.LogList
+	local RemotesList = {}
+
+	CodeBox.Container.TextBox.Text = ""
+
+	MyUI.Parent = game.Players.LocalPlayer.PlayerGui
+	MyUI.Enabled = false
+
+	local TopBar = Background.TopBar
+	local LeftPanel = Background.LeftPanel
+	local RightPanel = Background.RightPanel
+
+	local sideClosed = false
+
+	local function minimizeSize(speed)
+		if not speed then
+			speed = 0.3
+		end
+
+		sideClosed = true
+
+		TweenService:Create(
+			LeftPanel,
+			TweenInfo.new(speed),
+			{ Size = UDim2.fromOffset(LeftPanel.AbsoluteSize.X, Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y) }
+		)
+			:Play()
+		TweenService
+			:Create(
+				RightPanel,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(0, Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y) }
+			)
+			:Play()
+		TweenService
+			:Create(
+				TopBar,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(LeftPanel.AbsoluteSize.X, TopBar.AbsoluteSize.Y) }
+			)
+			:Play()
+		TweenService
+			:Create(RightScrolling, TweenInfo.new(speed), {
+				Size = UDim2.fromOffset(0, 119),
+				Position = UDim2.fromOffset(0, Background.AbsoluteSize.Y - 119 - TopBar.AbsoluteSize.Y),
+			})
+			:Play()
+		TweenService
+			:Create(
+				CodeBox,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(0, Background.AbsoluteSize.Y - 119 - TopBar.AbsoluteSize.Y) }
+			)
+			:Play()
+		TweenService
+			:Create(
+				LogList,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(LogList.AbsoluteSize.X, Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y - 18) }
+			)
+			:Play()
+	end
+
+	function isInResizeRange(p)
+		local relativeP = p - Background.AbsolutePosition
+		local range = 5
+		if
+			relativeP.X >= TopBar.AbsoluteSize.X - range
+			and relativeP.Y >= Background.AbsoluteSize.Y - range
+			and relativeP.X <= TopBar.AbsoluteSize.X
+			and relativeP.Y <= Background.AbsoluteSize.Y
+		then
+			return true, "B"
+		elseif relativeP.X >= TopBar.AbsoluteSize.X - range and relativeP.X <= Background.AbsoluteSize.X then
+			return true, "X"
+		elseif relativeP.Y >= Background.AbsoluteSize.Y - range and relativeP.Y <= Background.AbsoluteSize.Y then
+			return true, "Y"
+		end
+
+		return false
+	end
+
+	AddDraggingFunctionality(Background, Background, isInResizeRange)
+
+	function maximizeSize(speed)
+		if not speed then
+			speed = 0.3
+		end
+
+		sideClosed = false
+
+		TweenService
+			:Create(
+				LeftPanel,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(LeftPanel.AbsoluteSize.X, Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y) }
+			)
+			:Play()
+		TweenService
+			:Create(RightPanel, TweenInfo.new(speed), {
+				Size = UDim2.fromOffset(
+					Background.AbsoluteSize.X - LeftPanel.AbsoluteSize.X,
+					Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y
+				),
+			})
+			:Play()
+		TweenService
+			:Create(
+				TopBar,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(Background.AbsoluteSize.X, TopBar.AbsoluteSize.Y) }
+			)
+			:Play()
+		TweenService
+			:Create(RightScrolling, TweenInfo.new(speed), {
+				Size = UDim2.fromOffset(Background.AbsoluteSize.X - LeftPanel.AbsoluteSize.X, 110),
+				Position = UDim2.fromOffset(0, Background.AbsoluteSize.Y - 119 - TopBar.AbsoluteSize.Y),
+			})
+			:Play()
+		TweenService
+			:Create(CodeBox, TweenInfo.new(speed), {
+				Size = UDim2.fromOffset(
+					Background.AbsoluteSize.X - LeftPanel.AbsoluteSize.X,
+					Background.AbsoluteSize.Y - 119 - TopBar.AbsoluteSize.Y
+				),
+			})
+			:Play()
+		TweenService
+			:Create(
+				LogList,
+				TweenInfo.new(speed),
+				{ Size = UDim2.fromOffset(LogList.AbsoluteSize.X, Background.AbsoluteSize.Y - TopBar.AbsoluteSize.Y - 18) }
+			)
+			:Play()
+	end
+
+	local mouseInGui = false
+
+	function mouseEntered()
+		local existingCursor = MyUI:FindFirstChild("Cursor")
+		while existingCursor do
+			existingCursor:Destroy()
+			existingCursor = MyUI:FindFirstChild("Cursor")
+		end
+		local customCursor = Instance.new("ImageLabel")
+		customCursor.Name = "Cursor"
+		customCursor.Size = UDim2.fromOffset(200, 200)
+		customCursor.ZIndex = 1e5
+		customCursor.BackgroundTransparency = 1
+		customCursor.Image = ""
+		customCursor.Parent = MyUI
+
+		RunService:BindToRenderStep("Cursor", 1, function()
+			if mouseInGui then
+				local mouseLocation = UserInputService:GetMouseLocation() - Vector2.new(0, 36)
+				customCursor.Position = UDim2.fromOffset(
+					mouseLocation.X - customCursor.AbsoluteSize.X / 2,
+					mouseLocation.Y - customCursor.AbsoluteSize.Y / 2
+				)
+				local inRange, type = isInResizeRange(mouseLocation)
+				if inRange and not sideClosed and MyUI.Enabled then
+					customCursor.Image  = type == "B" and "rbxassetid://6065821980"
+						or type == "X" and "rbxassetid://6065821086"
+						or type == "Y" and "rbxassetid://6065821596"
+				elseif inRange and not MyUI.Enabled and type == "Y" or type == "B" then
+					customCursor.Image = "rbxassetid://6065821596"
+				elseif customCursor.Image ~= "rbxassetid://6065775281" then
+					customCursor.Image = "rbxassetid://0"
+				end
+			else
+				customCursor:Destroy()
+				RunService:UnbindFromRenderStep("Cursor")
+			end
+
+		end)
+	end
+
+	Mouse.Move:Connect(function()
+		local mousePos = UserInputService:GetMouseLocation() - Vector2.new(0, 36)
+		if
+			MyUI.Enabled
+			and mousePos.X >= TopBar.AbsolutePosition.X
+			and mousePos.X <= TopBar.AbsolutePosition.X + TopBar.AbsoluteSize.X
+			and mousePos.Y >= Background.AbsolutePosition.Y
+			and mousePos.Y <= Background.AbsolutePosition.Y + Background.AbsoluteSize.Y
+		then
+			if not mouseInGui then
+				mouseInGui = true
+				mouseEntered()
+			end
+		else
+			mouseInGui = false
+		end
+	end)
+
+	function validateSize()
+		local x, y = Background.AbsoluteSize.X, Background.AbsoluteSize.Y
+		local screenSize = workspace.CurrentCamera.ViewportSize
+		if x + Background.AbsolutePosition.X > screenSize.X then
+			if screenSize.X - Background.AbsolutePosition.X >= 450 then
+				x = screenSize.X - Background.AbsolutePosition.X
+			else
+				x = 450
+			end
+		elseif y + Background.AbsolutePosition.Y > screenSize.Y then
+			if screenSize.X - Background.AbsolutePosition.Y >= 268 then
+				y = screenSize.Y - Background.AbsolutePosition.Y
+			else
+				y = 268
+			end
+		end
+		Background.Size = UDim2.fromOffset(x, y)
+	end
+
+	function isInDragRange(p)
+		local relativeP = p - Background.AbsolutePosition
+		if
+			relativeP.X <= TopBar.AbsoluteSize.X - TopBar.CloseButton.AbsoluteSize.X * 3
+			and relativeP.X >= 0
+			and relativeP.Y <= TopBar.AbsoluteSize.Y
+			and relativeP.Y >= 0
+		then
+			return true
+		end
+		return false
+	end
+
+	local Binds = {}
+
+	function onBarInput(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local lastPos = UserInputService.GetMouseLocation(UserInputService)
+			local mainPos = Background.AbsolutePosition
+			local offset = mainPos - lastPos
+			local currentPos = offset + lastPos
+			RunService.BindToRenderStep(RunService, "drag", 1, function()
+				local newPos = UserInputService.GetMouseLocation(UserInputService)
+				if newPos ~= lastPos then
+					local currentX = (offset + newPos).X
+					local currentY = (offset + newPos).Y
+					local viewportSize = workspace.CurrentCamera.ViewportSize
+					if
+						(currentX < 0 and currentX < currentPos.X)
+						or (
+							currentX > (viewportSize.X - (sideClosed and 131 or TopBar.AbsoluteSize.X))
+								and currentX > currentPos.X
+						)
+					then
+						if currentX < 0 then
+							currentX = 0
+						else
+							currentX = viewportSize.X - (sideClosed and 131 or TopBar.AbsoluteSize.X)
+						end
+					end
+					if
+						(currentY < 0 and currentY < currentPos.Y)
+						or (
+							currentY > (viewportSize.Y - (not MyUI.Enabled and 19 or Background.AbsoluteSize.Y) - 36)
+								and currentY > currentPos.Y
+						)
+					then
+						if currentY < 0 then
+							currentY = 0
+						else
+							currentY = viewportSize.Y - (not MyUI.Enabled and 19 or Background.AbsoluteSize.Y) - 36
+						end
+					end
+					currentPos = Vector2.new(currentX, currentY)
+					lastPos = newPos
+					TweenService.Create(
+						TweenService,
+						Background,
+						TweenInfo.new(0.1),
+						{ Position = UDim2.new(0, currentPos.X, 0, currentPos.Y) }
+					):Play()
+				end
+
+				if not table.find(Binds, "drag") then
+					table.insert(Binds, "drag")
+				end
+
+				-- if input.UserInputState ~= Enum.UserInputState.Begin then
+				--     RunService.UnbindFromRenderStep(RunService, "drag")
+				-- end
+			end)
+
+		end
+	end
+
+	UserInputService.InputEnded:Connect(function(inputE)
+		if inputE.UserInputType == Enum.UserInputType.MouseButton1 then
+			for Index, Bind in Binds do
+				RunService:UnbindFromRenderStep(Bind)
+				InProcess = false
+				table.remove(Binds, Index)
+			end
+		end
+	end)
+
+	local function UpdateLogListSize()
+		LogList.CanvasSize = UDim2.new(0, LogList.UIListLayout.AbsoluteContentSize.X, 0, LogList.UIListLayout.AbsoluteContentSize.Y)
+	end
+
+	local function backgroundUserInput(input)
+		local mousePos = UserInputService:GetMouseLocation() - Vector2.new(0, 36)
+		local inResizeRange, type = isInResizeRange(mousePos)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 and inResizeRange then
+			local lastPos = UserInputService:GetMouseLocation()
+			local offset = Background.AbsoluteSize - lastPos
+			local currentPos = lastPos + offset
+
+			InProcess = true
+
+			RunService:BindToRenderStep("Resize", 1, function()
+				local newPos = UserInputService:GetMouseLocation()
+				if newPos ~= lastPos then
+					local currentX = (newPos + offset).X
+					local currentY = (newPos + offset).Y
+					if currentX < 450 then
+						currentX = 450
+					end
+					if currentY < 268 then
+						currentY = 268
+					end
+					currentPos = Vector2.new(currentX, currentY)
+
+
+					Background.Size = UDim2.fromOffset(
+						(not sideClosed and MyUI.Enabled and (type == "X" or type == "B")) and currentPos.X
+							or Background.AbsoluteSize.X,
+						(MyUI.Enabled and (type == "Y" or type == "B"))
+							and currentPos.Y
+							or Background.AbsoluteSize.Y
+					)
+
+					UpdateLogListSize()
+
+					validateSize()
+					if sideClosed then
+						minimizeSize()
+					else
+						maximizeSize()
+					end
+					lastPos = newPos
+				end
+			end)
+
+			if not table.find(Binds, "Resize") then
+				table.insert(Binds, "Resize")
+			end
+
+		elseif isInDragRange(mousePos) then
+			onBarInput(input)
+		end
+	end
+
+	Background:GetPropertyChangedSignal("Size"):Connect(function()
+		CodeBox.Container.TextBox.Size = UDim2.new(0.978, 0, 0, 100000)
+		CodeBox.Container.TextBox.Size = UDim2.new(0.978, 0, 0, CodeBox.Container.TextBox.TextBounds.Y)
+	end)
+
+	UserInputService.InputBegan:Connect(backgroundUserInput)
+
+	maximizeSize()
+
+	TopBar.MaximizeButton.MouseButton1Click:Connect(maximizeSize)
+	TopBar.MinimizeButton.MouseButton1Click:Connect(minimizeSize)
+	TopBar.CloseButton.MouseButton1Click:Connect(function()
+		MyUI.Enabled = false
+	end)
+
+	--// Default Button Function
+
+	local RightScrollingFunctions = {}
+	local BlockedList = {}
+	local SelectedGUID = nil
+
+	local function AddFunctionToRight(FunctionName, Function)
+		if RightScrolling:FindFirstChild(FunctionName) then return end
+
+		local NewFunction = RightScrolling.FunctionTemplate:Clone()
+		NewFunction.Name = FunctionName
+		NewFunction.Text.Text = FunctionName
+		NewFunction.Parent = RightScrolling
+		NewFunction.Visible = true
+
+		RightScrollingFunctions[FunctionName] = NewFunction.Button.MouseButton1Click:Connect(function()
+			Function(SelectedGUID)
+		end)
+	end
+
+
+	local function ResetRightFunctions()
+		for FunctionName, Connection in RightScrollingFunctions do
+			if FunctionName == "Clear" then continue end
+
+			local Frame = RightScrolling:FindFirstChild(FunctionName)
+
+			if Frame then
+				Frame:Destroy()
+			end
+
+			Connection:Disconnect()
+			RightScrollingFunctions[FunctionName] = nil
+		end
+	end
+
+	local function RemoveRemote(GUID)
+		if not GUID and not SelectedGUID then return end
+
+		if not GUID then
+			GUID = SelectedGUID
+		end
+
+		UpdateLogListSize()
+
+		local Frame = LogList:FindFirstChild(GUID)
+
+		if Frame then Frame:Destroy() end
+
+		RemotesList[GUID].ClickConnection:Disconnect()
+		RemotesList[GUID] = nil
+
+		if GUID == SelectedGUID then
+			SelectedGUID = nil
+
+			CodeBox.Container.TextBox.Text = ""
+			ResetRightFunctions()
+		end
+	end
+
+	local function ExecuteCurrentRemote()
+		local infos = RemotesList[SelectedGUID]
+
+		if not infos then return end
+
+		local Remote = infos.Remote
+
+		if Remote:IsA("RemoteEvent") then
+			return Remote:FireServer(unpack(infos.Args))
+		end
+
+		Remote:InvokeServer(unpack(infos.Args))
+	end
+
+	local function IgnoreRemote()
+		local infos = RemotesList[SelectedGUID]
+
+		if not infos then return end
+
+		local rIndex = table.find(BlockedList, infos.Remote)
+
+		if rIndex then
+			table.remove(BlockedList, rIndex)
+		else
+			table.insert(BlockedList, infos.Remote)
+		end
+
+		RightScrolling.Ignore.Text.Text = not rIndex and "Unignore" or "Ignore"			
+	end
+
+	local function SelectRemote()
+		local TextBox = CodeBox.Container.TextBox
+		TextBox:CaptureFocus()
+		TextBox.CursorPosition = string.len(TextBox.Text) + 1
+		TextBox.SelectionStart = 1
+	end
+
+	local function Clear()
+		for GUID, _ in RemotesList do
+			RemoveRemote(GUID)
+		end
+	end
+
+	AddFunctionToRight("Clear", Clear)
+
+	--// Add
+
+	local function QuotePath(path)
+		if path == "" then
+			return path
+		end
+
+		local quotedPath = ""
+		local parts = string.split(path, ".")
+
+		for i, part in ipairs(parts) do
+			local quotePart = ""
+			if part == "" then
+				quotePart = '[""]'
+			elseif string.find(part, " ") then
+				quotePart = '["' .. part .. '"]'
+			else
+				quotePart = "." .. part
+			end
+			quotedPath = quotedPath .. quotePart
+		end
+
+		if string.sub(quotedPath, 1, 1) == "." then
+			quotedPath = string.sub(quotedPath, 2)
+		end
+
+		return "game." .. quotedPath
+	end
+
+	local function GenerateString(remoteObject, ...)
+		local args = {...}
+		local argsString = ""
+		local eventName = QuotePath(remoteObject:GetFullName())
+
+		local Functions = {}
+
+		function Functions:GenerateTable(tbl, indentLevel)
+			local tblString = "{\n"
+			local indent = string.rep("\t", indentLevel)
+			local isFirst = true
+			for key, value in pairs(tbl) do
+				local formattedKey = Functions:formatValue(key)
+				if not isFirst then
+					tblString = tblString .. ",\n"
+				end
+				isFirst = false
+				tblString = tblString .. string.format('\t%s[%s] = ', indent, formattedKey)
+				if type(value) == "table" then
+					tblString = tblString .. Functions: GenerateTable(value, indentLevel + 1)
+				else
+					tblString ..= Functions:formatValue(value)
+				end
+			end
+
+			tblString = tblString .. "\n" .. string.rep("\t", indentLevel - 1) .. "},"
+
+			return tblString
+		end
+
+		function Functions:formatValue(value, indentLevel)
+			local TypesCommon = {"boolean", "number"}
+
+			if type(value) == "string" then
+				return string.format('"%s"', value)
+			elseif typeof(value) == "Instance" then
+				return QuotePath(value:GetFullName())
+			elseif type(value) == "table" then
+				return self:GenerateTable(value, indentLevel)
+			elseif table.find(TypesCommon, typeof(value)) then
+				return tostring(value)
+			else
+				return typeof(value) .. ".new(" .. tostring(value) .. ")"
+			end
+		end
+
+		if #args > 0 then
+			for i, arg in ipairs(args) do
+				local argFormat = ""
+				if type(arg) == "table" then
+					argFormat = string.format("\t[%d] = ", i) .. Functions:GenerateTable(arg, 2)
+				elseif typeof(arg) == "Instance" then
+					argFormat = string.format('\t[%d] = %s,\n', i, QuotePath(arg:GetFullName()))
+				else
+					argFormat = string.format('\t[%d] = %s,\n', i, Functions:formatValue(arg, 2))
+				end
+				argsString = argsString .. argFormat
+			end
+		else
+			argsString = '\t[1] = nil\n'
+		end
+
+		local serverMethod = remoteObject:IsA("RemoteFunction") and "InvokeServer" or "FireServer"
+
+		return string.format("--// Made for lowest level executor. \n\nlocal args = {\n%s}\n\n%s:%s(unpack(args))", argsString, eventName, serverMethod)
+	end
+
+
+	local Connections = {}
+
+	RemoteEvent.OnClientEvent:Connect(function(Remote: Instance, ...)
+		local GUID = HttpService:GenerateGUID()
+
+		if table.find(BlockedList, Remote) then return end
+
+		local NewRemoteTemplate = LogList.RemoteTemplate:Clone()
+		NewRemoteTemplate.Name = GUID
+
+		NewRemoteTemplate.Text.Text = Remote.Name
+		NewRemoteTemplate.ColorBar.BackgroundColor3 = (Remote:IsA("RemoteEvent") or Remote:IsA("UnreliableRemoteEvent") ) and Color3.fromRGB(255, 242, 0) or Color3.fromRGB(85, 170, 255)
+
+		NewRemoteTemplate.Visible = true
+		NewRemoteTemplate.Parent = LogList
+
+		RemotesList[GUID] = {
+			Remote = Remote,
+			Args = {...}
+		}
+
+		UpdateLogListSize()
+
+		RemotesList[GUID].ClickConnection = NewRemoteTemplate.Button.MouseButton1Click:Connect(function()
+
+			if SelectedGUID then
+				local LastFrame = LogList:FindFirstChild(SelectedGUID) 
+				if LastFrame then
+					TweenService:Create(LastFrame.Button, TweenInfo.new(.2, Enum.EasingStyle.Cubic), {BackgroundColor3 = Color3.fromRGB(0, 0, 0) }):Play()
+				end
+			end
+
+			for _, Connection in Connections do
+				Connection:Disconnect()
+			end
+
+			SelectedGUID = GUID
+			TweenService:Create(NewRemoteTemplate.Button, TweenInfo.new(.2, Enum.EasingStyle.Cubic), {BackgroundColor3 = Color3.fromRGB(116, 116, 116) }):Play()
+
+			ResetRightFunctions()
+
+			AddFunctionToRight("Execute", ExecuteCurrentRemote)
+			AddFunctionToRight("Remove", RemoveRemote)
+			AddFunctionToRight("Select", SelectRemote)
+			AddFunctionToRight("Ignore", IgnoreRemote)
+
+			RightScrolling.Ignore.Text.Text = table.find(BlockedList, Remote) and "Unignore" or "Ignore"	
+
+			local SourceCode = GenerateString(Remote, unpack(RemotesList[GUID].Args))
+			local ColoredSource = run(SourceCode)
+
+			table.insert(Connections, CodeBox.Container.TextBox.Focused:Connect(function()
+				CodeBox.Container.TextBox.Text = SourceCode
+
+			end))
+
+			table.insert(Connections, CodeBox.Container.TextBox.FocusLost:Connect(function()
+				CodeBox.Container.TextBox.Text = ColoredSource
+			end))
+
+			CodeBox.Container.TextBox.Text = ColoredSource
+
+			CodeBox.Container.TextBox.Size = UDim2.new(0.978, 0, 0, 100000)
+			CodeBox.Container.TextBox.Size = UDim2.new(0.978, 0, 0, CodeBox.Container.TextBox.TextBounds.Y)
+			CodeBox.Container.CanvasSize =  UDim2.new(0, 0, 0, CodeBox.Container.TextBox.TextBounds.Y)
+		end)
+	end)
+end
+
+--// Click Plugin
+
+MyUI.Enabled = true

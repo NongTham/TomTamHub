@@ -1,0 +1,498 @@
+-- =============================================
+-- COMPATIBILITY & SERVICES
+-- =============================================
+local Services = {
+    Players = game:GetService("Players"),
+    TweenService = game:GetService("TweenService"),
+    UserInputService = game:GetService("UserInputService"),
+    HttpService = game:GetService("HttpService"),
+    RunService = game:GetService("RunService"),
+    CoreGui = game:GetService("CoreGui"),
+    MarketplaceService = game:GetService("MarketplaceService"),
+    TeleportService = game:GetService("TeleportService")
+}
+
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+local WebSocket = WebSocket or (syn and syn.websocket) or (KRNL and KRNL.WebSocket)
+
+local protectGui = (syn and syn.protect_gui) or (gethui and function(gui) gui.Parent = gethui() end) or function(gui) gui.Parent = Services.CoreGui end
+
+if not httpRequest then
+    return game:GetService("StarterGui"):SetCore("SendNotification", { Title = "Error", Text = "Executor not supported", Duration = 5 })
+end
+
+-- =============================================
+-- CONFIGURATION
+-- =============================================
+local CONFIG = {
+    API_URL = "http://bkk.fe-grp.com:11067/api",
+    WS_URL = "ws://bkk.fe-grp.com:11067/ws",
+    POLL_INTERVAL = 3,
+    PING_INTERVAL = 30,
+    COOLDOWN = 1.5,
+    COLORS = {
+        BACKGROUND = Color3.fromRGB(25, 25, 35),
+        HEADER = Color3.fromRGB(45, 45, 65),
+        ACCENT = Color3.fromRGB(88, 101, 242),
+        DISABLED = Color3.fromRGB(60, 60, 70),
+        TEXT = Color3.fromRGB(255, 255, 255),
+        TEXT_DIM = Color3.fromRGB(180, 180, 190),
+        INPUT_BG = Color3.fromRGB(35, 35, 50),
+        MESSAGE_BG = Color3.fromRGB(40, 40, 55),
+        MENTION_BG = Color3.fromRGB(80, 70, 30),
+        ANNOUNCE_BG = Color3.fromRGB(85, 40, 40),
+        ANNOUNCE_TEXT = Color3.fromRGB(255, 220, 100),
+        ONLINE = Color3.fromRGB(67, 181, 129),
+        ERROR = Color3.fromRGB(237, 66, 69),
+        TIMESTAMP = Color3.fromRGB(120, 120, 140),
+        JOIN_BTN = Color3.fromRGB(67, 181, 129) -- ✅ สีปุ่ม Join (เขียว)
+    },
+    SOUNDS = {
+        NOTIFICATION = "rbxassetid://9063261250",
+        MENTION = "rbxassetid://4612375233"
+    }
+}
+
+-- =============================================
+-- VARIABLES
+-- =============================================
+local LocalPlayer = Services.Players.LocalPlayer
+local authToken = nil
+local lastMessageId = 0
+local processedIds = {}
+local isMinimized = false
+local visualOrder = 0
+local currentGameName = "Unknown Game"
+local onCooldown = false
+local activeWS = nil
+
+local notifSound = Instance.new("Sound")
+notifSound.SoundId = CONFIG.SOUNDS.NOTIFICATION
+notifSound.Volume = 0.5
+notifSound.Parent = Services.CoreGui
+
+local mentionSound = Instance.new("Sound")
+mentionSound.SoundId = CONFIG.SOUNDS.MENTION
+mentionSound.Volume = 1.0
+mentionSound.Parent = Services.CoreGui
+
+task.spawn(function()
+    local success, info = pcall(function() return Services.MarketplaceService:GetProductInfo(game.PlaceId) end)
+    if success and info and info.Name then currentGameName = info.Name end
+end)
+
+-- =============================================
+-- UTILS
+-- =============================================
+local function formatTime(isoString)
+    if not isoString then return os.date("%H:%M") end
+    local success, dt = pcall(function() return DateTime.fromIsoDate(isoString) end)
+    if success and dt then return dt:FormatLocalTime("HH:mm", "en-us") end
+    return os.date("%H:%M")
+end
+
+local function parseMarkdown(text)
+    if type(text) ~= "string" then return "" end
+    text = string.gsub(text, "%*%*(.-)%*%*", "<b>%1</b>")
+    text = string.gsub(text, "%*(.-)%*", "<i>%1</i>")
+    text = string.gsub(text, "__([^_]+)__", "<u>%1</u>")
+    text = string.gsub(text, "~~(.-)~~", "<s>%1</s>")
+    return text
+end
+
+local function escapeXml(str)
+    if type(str) ~= "string" then return "" end
+    str = string.gsub(str, "&", "&amp;")
+    str = string.gsub(str, "<", "&lt;")
+    str = string.gsub(str, ">", "&gt;")
+    str = string.gsub(str, "\"", "&quot;")
+    str = string.gsub(str, "'", "&apos;")
+    return str
+end
+
+-- =============================================
+-- UI CREATION
+-- =============================================
+local function createUI()
+    for _, child in pairs(Services.CoreGui:GetChildren()) do
+        if child.Name == "SomtankGlobalChat" then child:Destroy() end
+    end
+    
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "SomtankGlobalChat"
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pcall(function() protectGui(ScreenGui) end)
+    if not ScreenGui.Parent then ScreenGui.Parent = Services.CoreGui end
+
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 360, 0, 480)
+    MainFrame.Position = UDim2.new(0, 50, 0, 50)
+    MainFrame.BackgroundColor3 = CONFIG.COLORS.BACKGROUND
+    MainFrame.ClipsDescendants = true
+    MainFrame.Parent = ScreenGui
+    Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+
+    local Header = Instance.new("Frame")
+    Header.Name = "Header"
+    Header.Size = UDim2.new(1, 0, 0, 40)
+    Header.BackgroundColor3 = CONFIG.COLORS.HEADER
+    Header.Parent = MainFrame
+    
+    local Title = Instance.new("TextLabel")
+    Title.Text = "🌍 Global Chat"
+    Title.Size = UDim2.new(0, 200, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.TextColor3 = CONFIG.COLORS.TEXT
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 14
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Header
+
+    local MinimizeBtn = Instance.new("TextButton")
+    MinimizeBtn.Text = "-"
+    MinimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+    MinimizeBtn.AnchorPoint = Vector2.new(1, 0.5)
+    MinimizeBtn.Position = UDim2.new(1, -5, 0.5, 0)
+    MinimizeBtn.BackgroundTransparency = 1
+    MinimizeBtn.TextColor3 = CONFIG.COLORS.TEXT
+    MinimizeBtn.Font = Enum.Font.GothamBold
+    MinimizeBtn.TextSize = 20
+    MinimizeBtn.Parent = Header
+
+    local StatusDot = Instance.new("Frame")
+    StatusDot.Size = UDim2.new(0, 8, 0, 8)
+    StatusDot.AnchorPoint = Vector2.new(1, 0.5)
+    StatusDot.Position = UDim2.new(1, -40, 0.5, 0)
+    StatusDot.BackgroundColor3 = CONFIG.COLORS.ERROR
+    Instance.new("UICorner", StatusDot).CornerRadius = UDim.new(1, 0)
+    StatusDot.Parent = Header
+
+    local StatusText = Instance.new("TextLabel")
+    StatusText.Size = UDim2.new(0, 100, 1, 0)
+    StatusText.AnchorPoint = Vector2.new(1, 0) 
+    StatusText.Position = UDim2.new(1, -55, 0, 0)
+    StatusText.BackgroundTransparency = 1
+    StatusText.Text = "Connecting..."
+    StatusText.TextColor3 = CONFIG.COLORS.TEXT_DIM
+    StatusText.Font = Enum.Font.Gotham
+    StatusText.TextSize = 12
+    StatusText.TextXAlignment = Enum.TextXAlignment.Right
+    StatusText.Parent = Header
+
+    local ChatContainer = Instance.new("ScrollingFrame")
+    ChatContainer.Name = "ChatContainer"
+    ChatContainer.Size = UDim2.new(1, -10, 1, -100)
+    ChatContainer.Position = UDim2.new(0, 5, 0, 45)
+    ChatContainer.BackgroundTransparency = 1
+    ChatContainer.BorderSizePixel = 0
+    ChatContainer.ScrollBarThickness = 4
+    ChatContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    ChatContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ChatContainer.Parent = MainFrame
+    
+    local UIListLayout = Instance.new("UIListLayout")
+    UIListLayout.Padding = UDim.new(0, 5)
+    UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    UIListLayout.Parent = ChatContainer
+
+    local InputFrame = Instance.new("Frame")
+    InputFrame.Size = UDim2.new(1, -10, 0, 40)
+    InputFrame.Position = UDim2.new(0, 5, 1, -45)
+    InputFrame.BackgroundColor3 = CONFIG.COLORS.INPUT_BG
+    Instance.new("UICorner", InputFrame).CornerRadius = UDim.new(0, 6)
+    InputFrame.Parent = MainFrame
+
+    local TextInput = Instance.new("TextBox")
+    TextInput.Size = UDim2.new(1, -50, 1, 0)
+    TextInput.Position = UDim2.new(0, 10, 0, 0)
+    TextInput.BackgroundTransparency = 1
+    TextInput.Text = ""
+    TextInput.PlaceholderText = "พิมพ์ข้อความที่นี่..."
+    TextInput.TextColor3 = CONFIG.COLORS.TEXT
+    TextInput.PlaceholderColor3 = CONFIG.COLORS.TEXT_DIM
+    TextInput.Font = Enum.Font.Gotham
+    TextInput.TextSize = 14
+    TextInput.TextXAlignment = Enum.TextXAlignment.Left
+    TextInput.ClearTextOnFocus = false
+    TextInput.Parent = InputFrame
+
+    local SendBtn = Instance.new("TextButton")
+    SendBtn.Text = "➤"
+    SendBtn.Size = UDim2.new(0, 40, 1, 0)
+    SendBtn.Position = UDim2.new(1, -40, 0, 0)
+    SendBtn.BackgroundTransparency = 1
+    SendBtn.TextColor3 = CONFIG.COLORS.ACCENT
+    SendBtn.Font = Enum.Font.GothamBold
+    SendBtn.TextSize = 20
+    SendBtn.Parent = InputFrame
+
+    return {
+        MainFrame = MainFrame, Header = Header, ChatContainer = ChatContainer,
+        TextInput = TextInput, SendBtn = SendBtn, MinimizeBtn = MinimizeBtn,
+        StatusDot = StatusDot, StatusText = StatusText
+    }
+end
+
+local UI = createUI()
+
+-- =============================================
+-- LOGIC
+-- =============================================
+local function safeRequest(opts)
+    local success, response = pcall(function() return httpRequest(opts) end)
+    if success and response then
+        local decodedBody = nil
+        pcall(function() decodedBody = Services.HttpService:JSONDecode(response.Body) end)
+        return { StatusCode = response.StatusCode, Body = decodedBody }
+    end
+    return nil
+end
+
+local function addMessage(sender, msg, id, isSystem, gameName, timestamp, msgType, jobId)
+    if id and processedIds[id] then return end
+    if id then processedIds[id] = true end
+    if id and id > lastMessageId then lastMessageId = id end
+
+    visualOrder = visualOrder + 1 
+    local scroller = UI.ChatContainer
+    local isAtBottom = (scroller.CanvasPosition.Y + scroller.AbsoluteWindowSize.Y) >= (scroller.AbsoluteCanvasSize.Y - 20)
+    
+    local MsgFrame = Instance.new("Frame")
+    MsgFrame.Name = "Message_" .. visualOrder
+    MsgFrame.AutomaticSize = Enum.AutomaticSize.Y
+    MsgFrame.Size = UDim2.new(1, 0, 0, 0)
+    MsgFrame.BackgroundColor3 = CONFIG.COLORS.MESSAGE_BG
+    Instance.new("UICorner", MsgFrame).CornerRadius = UDim.new(0, 4)
+    MsgFrame.LayoutOrder = visualOrder 
+    MsgFrame.Parent = UI.ChatContainer
+
+    local TextLabel = Instance.new("TextLabel")
+    TextLabel.Size = UDim2.new(1, -10, 0, 0)
+    TextLabel.Position = UDim2.new(0, 5, 0, 5)
+    TextLabel.AutomaticSize = Enum.AutomaticSize.Y
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.TextWrapped = true
+    TextLabel.Font = Enum.Font.Gotham
+    TextLabel.TextSize = 13
+    TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TextLabel.RichText = true
+    
+    local timeStr = formatTime(timestamp)
+    local timePrefix = string.format('<font color="rgb(120,120,140)">[%s] </font>', timeStr)
+
+    local canJoin = (jobId and jobId ~= "" and jobId ~= game.JobId)
+    
+    if canJoin then
+        TextLabel.Size = UDim2.new(1, -40, 0, 0)
+        
+        local JoinBtn = Instance.new("TextButton")
+        JoinBtn.Name = "JoinBtn"
+        JoinBtn.Text = "🚀" -- รูปจรวด
+        JoinBtn.Size = UDim2.new(0, 30, 0, 20)
+        JoinBtn.AnchorPoint = Vector2.new(1, 0)
+        JoinBtn.Position = UDim2.new(1, -5, 0, 5)
+        JoinBtn.BackgroundColor3 = CONFIG.COLORS.JOIN_BTN
+        JoinBtn.TextColor3 = Color3.new(1, 1, 1)
+        JoinBtn.Font = Enum.Font.GothamBold
+        JoinBtn.TextSize = 12
+        JoinBtn.Parent = MsgFrame
+        Instance.new("UICorner", JoinBtn).CornerRadius = UDim.new(0, 4)
+        
+        JoinBtn.MouseButton1Click:Connect(function()
+            pcall(function()
+                Services.TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+            end)
+        end)
+    end
+
+    if isSystem then
+        TextLabel.Text = timePrefix .. "[System]: " .. msg
+        TextLabel.TextColor3 = CONFIG.COLORS.TEXT_DIM
+    elseif msgType == "announce" then
+        MsgFrame.BackgroundColor3 = CONFIG.COLORS.ANNOUNCE_BG
+        TextLabel.Text = string.format('%s<font size="16"><b>📢 ANNOUNCEMENT</b></font>\n%s', timePrefix, parseMarkdown(msg))
+        TextLabel.TextColor3 = CONFIG.COLORS.ANNOUNCE_TEXT
+        if sender ~= LocalPlayer.Name then mentionSound:Play() end
+    else
+        local gameTag = ""
+        if gameName and gameName ~= "Unknown Game" then
+            gameName = escapeXml(gameName)
+            if #gameName > 15 then gameName = string.sub(gameName, 1, 15) .. "..." end
+            gameTag = string.format(' <font color="rgb(100,100,100)" size="11">[%s]</font>', gameName)
+        end
+        
+        local isMentioned = false
+        if string.find(msg:lower(), "@" .. LocalPlayer.Name:lower()) then
+            isMentioned = true
+            MsgFrame.BackgroundColor3 = CONFIG.COLORS.MENTION_BG
+            local pattern = "@" .. LocalPlayer.Name
+            local replacement = string.format('<font color="rgb(255,215,0)"><b>@%s</b></font>', LocalPlayer.Name)
+            msg = string.gsub(msg, pattern, replacement)
+        end
+
+        local formattedMsg = parseMarkdown(msg)
+        TextLabel.Text = string.format('%s<font color="rgb(88,101,242)"><b>%s%s:</b></font> %s', timePrefix, sender, gameTag, formattedMsg)
+        TextLabel.TextColor3 = CONFIG.COLORS.TEXT
+
+        if sender ~= LocalPlayer.Name then 
+            if isMentioned then mentionSound:Play() else notifSound:Play() end
+        end
+    end
+    
+    TextLabel.Parent = MsgFrame
+    Instance.new("UIPadding", MsgFrame).PaddingBottom = UDim.new(0, 5)
+    
+    if isAtBottom then
+        Services.RunService.RenderStepped:Wait()
+        scroller.CanvasPosition = Vector2.new(0, 99999)
+    end
+end
+
+local function fetchHistory()
+    local res = safeRequest({ Url = CONFIG.API_URL .. "/history?limit=50", Method = "GET" })
+    if res and res.Body and res.Body.messages then
+        for _, msg in ipairs(res.Body.messages) do
+            -- ✅ รับ jobId
+            addMessage(msg.sender, msg.message, msg.id, false, msg.gameName, msg.timestamp, msg.type, msg.jobId)
+        end
+        task.wait(0.1)
+        UI.ChatContainer.CanvasPosition = Vector2.new(0, 99999)
+    end
+end
+
+local function register()
+    local res = safeRequest({
+        Url = CONFIG.API_URL .. "/register",
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = Services.HttpService:JSONEncode({ username = LocalPlayer.Name })
+    })
+
+    if res and res.StatusCode == 200 and res.Body.token then
+        authToken = res.Body.token
+        UI.StatusDot.BackgroundColor3 = CONFIG.COLORS.ONLINE
+        addMessage("System", "Connected to Global Chat!", nil, true)
+        return true
+    end
+    addMessage("System", "Connection Failed...", nil, true)
+    return false
+end
+
+local function sendMessage(txt)
+    if not authToken then return end
+    if onCooldown then return end
+
+    onCooldown = true
+    UI.SendBtn.TextColor3 = CONFIG.COLORS.DISABLED
+    Services.TweenService:Create(UI.SendBtn, TweenInfo.new(0.2), {TextColor3 = CONFIG.COLORS.DISABLED}):Play()
+
+    task.spawn(function()
+        local res = safeRequest({
+            Url = CONFIG.API_URL .. "/send",
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json", ["Authorization"] = "Bearer " .. authToken },
+            Body = Services.HttpService:JSONEncode({ 
+                message = txt, 
+                gameId = game.PlaceId, 
+                gameName = currentGameName,
+                jobId = game.JobId
+            })
+        })
+
+        if res and res.StatusCode ~= 200 then
+            local errMsg = "Unknown Error"
+            if res.Body and res.Body.error then errMsg = res.Body.error end
+            addMessage("System", string.format('<font color="rgb(237,66,69)">❌ Error: %s</font>', errMsg), nil, true, nil, nil, "error")
+        end
+    end)
+
+    task.delay(CONFIG.COOLDOWN, function()
+        onCooldown = false
+        Services.TweenService:Create(UI.SendBtn, TweenInfo.new(0.2), {TextColor3 = CONFIG.COLORS.ACCENT}):Play()
+    end)
+end
+
+UI.SendBtn.MouseButton1Click:Connect(function()
+    if UI.TextInput.Text ~= "" and not onCooldown then
+        sendMessage(UI.TextInput.Text)
+        UI.TextInput.Text = ""
+        task.wait(0.1)
+        UI.ChatContainer.CanvasPosition = Vector2.new(0, 99999)
+    end
+end)
+
+UI.TextInput.FocusLost:Connect(function(enter)
+    if enter and UI.TextInput.Text ~= "" and not onCooldown then
+        sendMessage(UI.TextInput.Text)
+        UI.TextInput.Text = ""
+        task.wait(0.1)
+        UI.ChatContainer.CanvasPosition = Vector2.new(0, 99999)
+    end
+end)
+
+local dragging, dragInput, dragStart, startPos
+UI.Header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true; dragStart = input.Position; startPos = UI.MainFrame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+UI.Header.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end end)
+Services.UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        UI.MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+UI.MinimizeBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then
+        UI.MainFrame:TweenSize(UDim2.new(0, 360, 0, 40), "Out", "Quad", 0.3, true)
+        UI.MinimizeBtn.Text = "+"; UI.ChatContainer.Visible = false; UI.TextInput.Parent.Visible = false
+    else
+        UI.MainFrame:TweenSize(UDim2.new(0, 360, 0, 480), "Out", "Quad", 0.3, true)
+        UI.MinimizeBtn.Text = "-"; task.wait(0.3); UI.ChatContainer.Visible = true; UI.TextInput.Parent.Visible = true
+    end
+end)
+
+-- =============================================
+-- MAIN LOOP
+-- =============================================
+task.spawn(function()
+    if not register() then return end
+    
+    fetchHistory()
+
+    if WebSocket and WebSocket.connect then
+        pcall(function()
+            activeWS = WebSocket.connect(CONFIG.WS_URL)
+            activeWS.OnMessage:Connect(function(msg)
+                local data = Services.HttpService:JSONDecode(msg)
+                if data.type == "new_message" then
+                    -- ✅ รับ jobId
+                    addMessage(data.data.sender, data.data.message, data.data.id, false, data.data.gameName, data.data.timestamp, data.data.type, data.data.jobId)
+                elseif data.type == "online_count" then
+                    UI.StatusText.Text = "Online: " .. tostring(data.count)
+                end
+            end)
+            addMessage("System", "WebSocket Mode Active", nil, true)
+            while activeWS do
+                activeWS:Send(Services.HttpService:JSONEncode({ type = "ping" }))
+                task.wait(CONFIG.PING_INTERVAL)
+            end
+        end)
+    end
+
+    while true do
+        task.wait(CONFIG.POLL_INTERVAL)
+        local res = safeRequest({ Url = CONFIG.API_URL .. "/get?lastId=" .. lastMessageId, Method = "GET" })
+        if res and res.Body and res.Body.messages then
+            for _, msg in ipairs(res.Body.messages) do
+                addMessage(msg.sender, msg.message, msg.id, false, msg.gameName, msg.timestamp, msg.type, msg.jobId)
+            end
+        end
+    end
+end)
